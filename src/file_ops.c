@@ -68,17 +68,3 @@ void traverse_directory(const char *base_path) {
     // 7. 디렉터리 닫기
     closedir(dir);
 }
-
-/**
- * @brief 프로그램 시작점 (Entry Point)
- */
-int main() {
-    // 탐색을 시작할 경로
-    const char *start_path = "."; // '.'는 현재 디렉터리를 의미
-
-    printf("--- Start Traversal from '%s' ---\n", start_path);
-    traverse_directory(start_path);
-    printf("--- End Traversal ---\n");
-
-    return 0;
-}
