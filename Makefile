@@ -5,13 +5,16 @@
 CC = gcc
 
 # 컴파일 플래그:
-# -Wall -Wextra : 거의 모든 표준 경고를 켭니다. (버그 잡기 좋음)
-# -g            : 디버깅 정보를 포함합니다. (gdb 사용 시)
+# -Wall -Wextra : 거의 모든 표준 경고를 킴 (버그 잡기 좋음)
+# -g            : 디버깅 정보를 포함 (gdb 사용 시)
 # -Isrc         : 'src' 디렉터리도 헤더 파일 검색 경로에 포함 (옵션)
 CFLAGS = -Wall -Wextra -g
 
 # 최종 실행 파일 이름
 TARGET = ransomware
+
+# 링커 플래그: crypto 라이브러리를 링크
+LDFLAGS = -lcrypto
 
 # 2. 자동화 변수 (Automatic Variables)
 # -----------------------------------
@@ -36,7 +39,7 @@ all: $(TARGET)
 # 최종 실행 파일(ransomware)을 만드는 규칙
 $(TARGET): $(OBJS)
 	@echo "Linking..."
-	$(CC) $(CFLAGS) -o $(TARGET) $(OBJS)
+	$(CC) $(CFLAGS) -o $(TARGET) $(OBJS) $(LDFLAGS)
 	@echo "Build complete: $(TARGET)"
 
 # 'obj/%.o' (오브젝트 파일)을 'src/%.c' (소스 파일)로부터 만드는 패턴 규칙
