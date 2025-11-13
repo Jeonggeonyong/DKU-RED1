@@ -12,6 +12,6 @@ typedef enum {
  * @param base_path 탐색을 시작할 디렉터리 경로
  * @param mode 실행할 모드 (암호화 또는 복호화)
  */
-void traverse_directory(const char *base_path, operation_mode mode);
+void traverse_directory(const char *base_path, operation_mode mode, const char *extension);
 
 #endif // FILE_OPS_H
