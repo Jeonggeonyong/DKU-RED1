@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h> 
 #include <time.h>
+#include <limits.h>
 #include "file_ops.h" 
 
 
@@ -22,7 +23,8 @@ static void generate_random_string(char *buf, int len) {
  * @brief 프로그램 사용법을 출력하는 헬퍼 함수
  */
 void print_usage(const char *prog_name) {
-    fprintf(stderr, "Usage: %s [mode] <target_path>\n", prog_name);
+    // fprintf(stderr, "Usage: %s [mode] <target_path>\n", prog_name);
+    fprintf(stderr, "Usage: %s [mode]\n", prog_name);
     fprintf(stderr, "Modes:\n");
     fprintf(stderr, "  -e    Encrypt mode\n");
     fprintf(stderr, "  -d    Decrypt mode\n");
@@ -33,7 +35,7 @@ void print_usage(const char *prog_name) {
  */
 int main(int argc, char *argv[]) {
     // 인자 개수 확인 
-    if (argc != 3) {
+    if (argc != 2) { // 3 -> 2로 수정 (타겟 디렉토리를 고정함)
         fprintf(stderr, "Error: Invalid arguments.\n\n");
         print_usage(argv[0]);
         return 1; // 오류 코드로 종료
@@ -55,8 +57,19 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    // [/home/user/workspace/illusion]으로 고정
+    // HOME 환경변수 기준으로 백엔드 경로 지정
+    const char *home_dir = getenv("HOME");
+    if (!home_dir) {
+        fprintf(stderr, "Error: HOME environment variable not set.\n");
+        return 1;
+    }
+    // 자동으로 illusion 백엔드 경로 사용
+    start_path = malloc(PATH_MAX);
+    snprintf((char *)start_path, PATH_MAX, "%s/workspace/illusion", home_dir);
+
     // 세 번째 인자를 탐색 경로로 설정
-    start_path = argv[2];
+    // start_path = argv[2];
     printf("--- Start Traversal ---\n");
     printf("  Target Mode: %s\n", (mode == MODE_ENCRYPT) ? "ENCRYPT" : "DECRYPT");
     printf("  Target Path: %s\n", start_path);

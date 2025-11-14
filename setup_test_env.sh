@@ -1,15 +1,24 @@
 #!/bin/bash
 
+# HOME 디렉터리 기준
+HOME_DIR="${HOME}"
+BACKEND_DIR="$HOME_DIR/workspace/target"
+MOUNT_POINT_DIR="$HOME_DIR/workspace/illusion"
+
 # 테스트 디렉터리 이름 정의
-TEST_DIR="test_environment"
+TEST_DIR="$BACKEND_DIR"
 
 # 1. 매번 깨끗한 테스트를 위해 기존 디렉터리 삭제
 echo "Cleaning up previous '$TEST_DIR'..."
 rm -rf "$TEST_DIR"
+echo "Cleaning up previous '$MOUNT_POINT_DIR'..."
+rm -rf "$MOUNT_POINT_DIR"
 
 # 2. 메인 디렉터리 생성
 echo "Creating test directory '$TEST_DIR'..."
 mkdir -p "$TEST_DIR"
+echo "Creating test directory '$MOUNT_POINT_DIR'..."
+mkdir -p "$MOUNT_POINT_DIR"
 
 # 3. 하위 디렉터리 생성
 echo "Creating subdirectories..."
