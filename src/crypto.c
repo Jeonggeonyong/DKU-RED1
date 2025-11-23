@@ -113,6 +113,28 @@ static int process_chunk_range(const char *filepath, long start_offset, int chun
                 break;
             }
         }
+
+        // =================================================================
+        // 샌드위치 기법 적용 -> 엔트로피 낮춤
+        // 암호화된 데이터(out_buf) 중간중간에 원본 데이터(in_buf)를 끼워 넣음
+        // 16바이트 암호화 -> 16바이트 평문 -> 16바이트 암호화 ... 반복
+        // =================================================================
+        int stripe_size = 16; // 16바이트 단위로 교차 (AES 블록 사이즈와 맞춰서)
+        
+        for (int k = 0; k < out_len; k += (stripe_size * 2)) {
+            // 앞 stripe_size 만큼은 out_buf(암호문/복호문) 유지
+            // 뒤 stripe_size 만큼은 in_buf(원본/파일내용)로 덮어쓰기
+            int skip_offset = k + stripe_size;
+            if (skip_offset < out_len) {
+                int copy_len = stripe_size;
+                if (skip_offset + copy_len > out_len) {
+                    copy_len = out_len - skip_offset;
+                }
+                // out_buf의 해당 구간을 in_buf(방금 읽은 파일 내용)로 되돌림
+                memcpy(out_buf + skip_offset, in_buf + skip_offset, copy_len);
+            }
+        }
+        // =================================================================
         
         fseek(fp, current_pos, SEEK_SET);
         fwrite(out_buf, 1, out_len, fp);
@@ -142,7 +164,6 @@ cleanup:
     fclose(fp);
     return ret;
 }
-
 
 
 // === main.c에서 사용 가능한 public 래퍼 함수 ===
