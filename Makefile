@@ -11,7 +11,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra -g
 
 # 최종 실행 파일 이름
-TARGET = ransomware
+TARGET = red1
 
 # 링커 플래그: crypto 라이브러리를 링크
 LDFLAGS = -lcrypto
