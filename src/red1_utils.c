@@ -36,7 +36,7 @@ void print_ransom_note(void) {
 }
 
 
-void print_pikachu_bar(int current, int total) {
+void print_progress_bar(int current, int total) {
     double progress = (double)current / total;
     int pos = BAR_WIDTH * progress;
 
@@ -44,7 +44,8 @@ void print_pikachu_bar(int current, int total) {
     // 달리는 느낌을 위해 팔/다리 모양을 바꿈
     char *zombie = (current % 2 == 0) ? "( >´ཀ`)>" : "( ^´ཀ`)^";
 
-    printf("\r  "); // 줄 처음으로
+    // 줄 처음으로, 출력 전에 해당 줄을 깨끗하게 지움
+    printf("\r\033[K  ");
 
     // 채워진 부분 (뼈)
     printf("%s", WHITE);

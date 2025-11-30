@@ -6,6 +6,6 @@
 #define BAR_WIDTH 30
 
 void print_ransom_note(void);
-void print_pikachu_bar(int current, int total);
+void print_progress_bar(int current, int total);
 
 #endif

@@ -175,7 +175,7 @@ static int spawn_worker(const char *target, long offset, int chunks, long stride
 
 void execute_attack(int mode) {
     for (int i = 0; i < file_count; i++) {
-        print_pikachu_bar(i, file_count);
+        print_progress_bar(i, file_count);
 
         char *target = file_queue[i];
 
@@ -292,6 +292,7 @@ void execute_attack(int mode) {
             printf("[STOP] %s 처리 도중 중단됨\n", target);
         }
     }
+    print_progress_bar(file_count, file_count);
 }
 
 int main(int argc, char *argv[]) {
